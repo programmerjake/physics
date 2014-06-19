@@ -25,6 +25,7 @@ private:
     bool affectedByGravity;
     bool isStatic_;
     bool supported;
+    bool destroyed = false;
     VectorF extents;
     weak_ptr<PhysicsWorld> world;
     uint64_t latestUpdateTag = 0;
@@ -48,6 +49,14 @@ public:
     bool isStatic() const
     {
         return isStatic_;
+    }
+    bool isDestroyed() const
+    {
+        return destroyed;
+    }
+    void destroy()
+    {
+        destroyed = true;
     }
     VectorF getExtents() const
     {
@@ -171,7 +180,7 @@ inline PositionF PhysicsObject::getPosition() const
     auto world = getWorld();
     int variableSetIndex = world->getOldVariableSetIndex();
     float deltaTime = world->getCurrentTime() - objectTime[variableSetIndex];
-    if(affectedByGravity)
+    if(affectedByGravity && !isSupported())
         return position[variableSetIndex] + deltaTime * velocity[variableSetIndex] + 0.5f * deltaTime * deltaTime * gravityVector;
     return position[variableSetIndex] + deltaTime * velocity[variableSetIndex];
 }
@@ -180,7 +189,7 @@ inline VectorF PhysicsObject::getVelocity() const
 {
     auto world = getWorld();
     int variableSetIndex = world->getOldVariableSetIndex();
-    if(!affectedByGravity)
+    if(!affectedByGravity || isSupported())
         return velocity[variableSetIndex];
     float deltaTime = world->getCurrentTime() - objectTime[variableSetIndex];
     return velocity[variableSetIndex] + deltaTime * gravityVector;
@@ -188,7 +197,6 @@ inline VectorF PhysicsObject::getVelocity() const
 
 inline void PhysicsObject::setNewState(PositionF newPosition, VectorF newVelocity)
 {
-    //cout << "new position : " << (VectorF)newPosition << " : new velocity : " << newVelocity << endl;
     auto world = getWorld();
     int variableSetIndex = world->getNewVariableSetIndex();
     objectTime[variableSetIndex] = world->getCurrentTime();
@@ -197,6 +205,7 @@ inline void PhysicsObject::setNewState(PositionF newPosition, VectorF newVelocit
     newStateCount++;
     newPosition /= newStateCount;
     newVelocity /= newStateCount;
+    cout << "new position : " << (VectorF)newPosition << " : new velocity : " << newVelocity << endl;
     position[variableSetIndex] = newPosition;
     velocity[variableSetIndex] = newVelocity;
     world->changedObjects[(intptr_t)this] = shared_from_this();
@@ -285,6 +294,7 @@ inline double PhysicsObject::getNextCollisionTime(const PhysicsObject & rt) cons
 
 inline void PhysicsWorld::runToTime(double stopTime)
 {
+    vector<CollisionEvent> deletedEvents;
     for(;;)
     {
         vector<shared_ptr<PhysicsObject>> objectsVector(objects.begin(), objects.end());
@@ -295,20 +305,37 @@ inline void PhysicsWorld::runToTime(double stopTime)
         for(auto i = objectsVector.begin(); i != objectsVector.end(); i++)
         {
             shared_ptr<PhysicsObject> objectA = *i;
+            if(!objectA || objectA->isDestroyed())
+                continue;
+            objectA->position[getOldVariableSetIndex()] = objectA->getPosition();
+            objectA->velocity[getOldVariableSetIndex()] = objectA->getVelocity();
+            objectA->objectTime[getOldVariableSetIndex()] = currentTime;
             objectA->supported = false;
+            if(objectA->isStatic())
+            {
+                objectA->supported = true;
+                continue;
+            }
+            VectorF & velocity = objectA->velocity[getOldVariableSetIndex()];
             for(auto j = objectsVector.begin(); j != i; j++)
             {
                 shared_ptr<PhysicsObject> objectB = *j;
+                if(!objectB || objectB->isDestroyed())
+                    continue;
                 bool supported = objectA->isSupportedBy(*objectB);
                 if(supported)
+                {
                     objectA->supported = true;
+                    //velocity.y = max(velocity.y, objectB->getVelocity().y);
+                }
             }
+            cout << (objectA->supported ? "true " : "false ") << velocity << endl;
         }
         while(!changedObjects.empty())
         {
             shared_ptr<PhysicsObject> objectA = shared_ptr<PhysicsObject>(get<1>(*changedObjects.begin()));
             changedObjects.erase(changedObjects.begin());
-            if(!objectA)
+            if(!objectA || objectA->isDestroyed())
                 continue;
             for(auto i = objects.begin(); i != objects.end();)
             {
@@ -318,9 +345,14 @@ inline void PhysicsWorld::runToTime(double stopTime)
                     i++;
                     continue;
                 }
-                if(!objectB)
+                if(!objectB || objectB->isDestroyed())
                 {
                     i = objects.erase(i);
+                    continue;
+                }
+                if(changedObjects.find((intptr_t)objectB.get()) != changedObjects.end())
+                {
+                    i++;
                     continue;
                 }
                 double t = objectA->getNextCollisionTime(*objectB);
@@ -345,22 +377,31 @@ inline void PhysicsWorld::runToTime(double stopTime)
         CollisionEvent event = eventsQueue.top();
         if(event.collisionTime > stopTime)
             break;
-        eventsQueue.pop();
-        eventsSet.erase(event);
-        shared_ptr<PhysicsObject> objectA(event.a), objectB(event.b);
-        if(objectA && objectB)
+        do
         {
-            if(event.aTag == objectA->latestUpdateTag && event.bTag == objectB->latestUpdateTag)
+            event = eventsQueue.top();
+            eventsQueue.pop();
+            deletedEvents.push_back(event);
+            shared_ptr<PhysicsObject> objectA(event.a), objectB(event.b);
+            if(objectA && objectB && !objectA->isDestroyed() && !objectB->isDestroyed())
             {
-                currentTime = event.collisionTime;
-                //cout << currentTime << endl;
-                objectA->adjustPosition(*objectB);
-                objectB->adjustPosition(*objectA);
+                if(event.aTag == objectA->latestUpdateTag && event.bTag == objectB->latestUpdateTag)
+                {
+                    currentTime = event.collisionTime;
+                    cout << currentTime << endl;
+                    objectA->adjustPosition(*objectB);
+                    objectB->adjustPosition(*objectA);
+                }
             }
         }
+        while(!eventsQueue.empty() && eventsQueue.top().collisionTime < event.collisionTime + timeEPS);
         swapVariableSetIndex();
     }
     currentTime = stopTime;
+    for(auto e : deletedEvents)
+    {
+        eventsSet.erase(e);
+    }
     cout << currentTime << endl;
 }
 
@@ -380,6 +421,9 @@ inline void PhysicsObject::adjustPosition(const PhysicsObject & rt)
     float interpolationT = 0.5f;
     if(rt.isStatic())
         interpolationT = 1.0f;
+    float interpolationTY = interpolationT;
+    if(rt.isSupported())
+        interpolationTY = 1.0f;
     VectorF normal(0);
     if(deltaPosition.x == 0)
         deltaPosition.x = PhysicsWorld::distanceEPS;
@@ -390,20 +434,20 @@ inline void PhysicsObject::adjustPosition(const PhysicsObject & rt)
     if(surfaceOffset.x < surfaceOffset.y && surfaceOffset.x < surfaceOffset.z)
     {
         normal.x = sgn(deltaPosition.x);
-        aPosition.x -= interpolationT * normal.x * surfaceOffset.x;
+        aPosition.x += interpolationT * normal.x * surfaceOffset.x;
     }
     else if(surfaceOffset.y < surfaceOffset.z)
     {
         normal.y = sgn(deltaPosition.y);
-        aPosition.y -= interpolationT * normal.y * surfaceOffset.y;
+        aPosition.y += interpolationTY * normal.y * surfaceOffset.y;
     }
     else
     {
         normal.z = sgn(deltaPosition.z);
-        aPosition.z -= interpolationT * normal.z * surfaceOffset.z;
+        aPosition.z += interpolationT * normal.z * surfaceOffset.z;
     }
     if(dot(deltaVelocity, normal) < 0)
-        aVelocity -= dot(deltaVelocity, normal) * normal * interpolationT;
+        aVelocity -= 1.5f * dot(deltaVelocity, normal) * normal * interpolationT;
     setNewState(aPosition, aVelocity);
 }
 
@@ -411,7 +455,7 @@ bool PhysicsObject::isSupportedBy(const PhysicsObject & rt) const
 {
     if(isStatic())
         return true;
-    if(!rt.isSupported())
+    if(!rt.isSupported() && !rt.isStatic())
         return false;
     PositionF aPosition = getPosition();
     PositionF bPosition = rt.getPosition();
@@ -428,7 +472,7 @@ bool PhysicsObject::isSupportedBy(const PhysicsObject & rt) const
         {
             if(deltaPosition.y < PhysicsWorld::distanceEPS * 4 + extentsSum.y)
             {
-                if(aVelocity.y + PhysicsWorld::distanceEPS < bVelocity.y)
+                if(aVelocity.y - PhysicsWorld::distanceEPS < bVelocity.y)
                     return true;
             }
         }

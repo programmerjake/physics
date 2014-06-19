@@ -30,7 +30,12 @@ struct MyObject
     shared_ptr<PhysicsObject> physicsObject;
     TransformedMesh getMesh()
     {
-        Mesh boxMesh = Generate::unitBox(TextureAtlas::OakWood.td(), TextureAtlas::OakWood.td(), TextureAtlas::WoodEnd.td(), TextureAtlas::WoodEnd.td(), TextureAtlas::OakWood.td(), TextureAtlas::OakWood.td());
+        TextureDescriptor td = TextureAtlas::OakWood.td();
+        if(physicsObject->isStatic())
+            td = TextureAtlas::BirchWood.td();
+        else if(physicsObject->isSupported())
+            td = TextureAtlas::JungleWood.td();
+        Mesh boxMesh = Generate::unitBox(td, td, TextureAtlas::WoodEnd.td(), TextureAtlas::WoodEnd.td(), td, td);
         return transform(Matrix::scale(2).concat(Matrix::translate(-1, -1, -1)).concat(Matrix::scale(physicsObject->getExtents())).concat(Matrix::translate((VectorF)physicsObject->getPosition())), boxMesh);
     }
     MyObject(shared_ptr<PhysicsObject> physicsObject)
@@ -44,12 +49,22 @@ int myMain(vector<wstring> args)
     shared_ptr<PhysicsWorld> physicsWorld = make_shared<PhysicsWorld>();
     vector<MyObject> objects =
     {
-        MyObject(PhysicsObject::make(PositionF(0, 1, 0, Dimension::Overworld), VectorF(0), true, false, VectorF(0.5f), physicsWorld)),
-        MyObject(PhysicsObject::make(PositionF(0, 0, 0, Dimension::Overworld), VectorF(0), true, false, VectorF(0.5f), physicsWorld)),
-        MyObject(PhysicsObject::make(PositionF(0, -5, 0, Dimension::Overworld), VectorF(0), false, true, VectorF(0.5f), physicsWorld)),
+        MyObject(PhysicsObject::make(PositionF(0.5f, 1.5, 0, Dimension::Overworld), VectorF(0), true, false, VectorF(0.5f), physicsWorld)),
+        MyObject(PhysicsObject::make(PositionF(1.1f, 2.5, 0, Dimension::Overworld), VectorF(-0.5f, 0, 0), true, false, VectorF(0.5f), physicsWorld)),
+        MyObject(PhysicsObject::make(PositionF(0, -3, 0, Dimension::Overworld), VectorF(0), true, false, VectorF(0.5f), physicsWorld)),
+        MyObject(PhysicsObject::make(PositionF(0, -5, 0, Dimension::Overworld), VectorF(0), false, true, VectorF(2, 0.5f, 2), physicsWorld)),
+        MyObject(PhysicsObject::make(PositionF(-3, -5, 0, Dimension::Overworld), VectorF(0), false, true, VectorF(0.5f, 2, 2), physicsWorld)),
+        MyObject(PhysicsObject::make(PositionF(3, -5, 0, Dimension::Overworld), VectorF(0), false, true, VectorF(0.5f, 2, 2), physicsWorld)),
+        MyObject(PhysicsObject::make(PositionF(0, -5, -3, Dimension::Overworld), VectorF(0), false, true, VectorF(2, 2, 0.5f), physicsWorld)),
+        //MyObject(PhysicsObject::make(PositionF(0, -5, 3, Dimension::Overworld), VectorF(0), false, true, VectorF(2, 2, 0.5f), physicsWorld)),
     };
 #if 0
+    physicsWorld->stepTime(0.4517);
     physicsWorld->stepTime(100);
+    for(MyObject o : objects)
+    {
+        cout << o.physicsObject->isStatic() << " " << o.physicsObject->isSupported() << " " << (VectorF)o.physicsObject->getPosition() << " " << o.physicsObject->getVelocity() << endl;
+    }
     return 0;
 #else
     startGraphics();
