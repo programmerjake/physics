@@ -1,0 +1,10 @@
+bin
+obj
+*~
+*.layout
+*.depend
+*.exe
+physics
+physics-debug
+*.o
+*.a
