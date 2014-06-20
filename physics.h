@@ -25,6 +25,8 @@ struct PhysicsProperties final
     }
 };
 
+typedef function<void(PositionF & position, VectorF & velocity)> PhysicsConstraint;
+
 class PhysicsObject final : public enable_shared_from_this<PhysicsObject>
 {
     friend class PhysicsWorld;
@@ -41,6 +43,7 @@ private:
     uint64_t latestUpdateTag = 0;
     size_t newStateCount = 0;
     PhysicsProperties properties;
+    shared_ptr<const vector<PhysicsConstraint>> constraints;
     PhysicsObject(const PhysicsObject &) = delete;
     const PhysicsObject & operator =(const PhysicsObject &) = delete;
     PhysicsObject(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world, PhysicsProperties properties);
@@ -49,6 +52,16 @@ public:
     ~PhysicsObject();
     PositionF getPosition() const;
     VectorF getVelocity() const;
+    shared_ptr<PhysicsObject> setConstraints(shared_ptr<const vector<PhysicsConstraint>> constraints = nullptr)
+    {
+        this->constraints = constraints;
+        return shared_from_this();
+    }
+    shared_ptr<PhysicsObject> setConstraints(const vector<PhysicsConstraint> &constraints)
+    {
+        this->constraints = make_shared<vector<PhysicsConstraint>>(constraints);
+        return shared_from_this();
+    }
     bool isAffectedByGravity() const
     {
         return affectedByGravity;
@@ -309,7 +322,7 @@ inline double PhysicsObject::getNextCollisionTime(const PhysicsObject & rt) cons
 
 inline void PhysicsWorld::runToTime(double stopTime)
 {
-    float stepDuration = 1 / 60.0f;
+    float stepDuration = 1 / 30.0f;
     size_t stepCount = (size_t)ceil((stopTime - currentTime) / stepDuration - timeEPS);
     for(size_t i = 1; i <= stepCount; i++)
     {
@@ -318,14 +331,20 @@ inline void PhysicsWorld::runToTime(double stopTime)
         else
             currentTime += stepDuration;
         bool anyCollisions = true;
-        for(size_t i = 0; i < 5 && anyCollisions; i++)
+        for(size_t i = 0; i < 10 && anyCollisions; i++)
         {
             anyCollisions = false;
             vector<shared_ptr<PhysicsObject>> objectsVector(objects.begin(), objects.end());
-            sort(objectsVector.begin(), objectsVector.end(), [](shared_ptr<PhysicsObject> a, shared_ptr<PhysicsObject> b)
+            vector<pair<float, shared_ptr<PhysicsObject>>> temporaryObjectsVector;
+            temporaryObjectsVector.resize(objectsVector.size());
+            for(size_t i = 0; i < temporaryObjectsVector.size(); i++)
+                temporaryObjectsVector[i] = make_pair(objectsVector[i]->getPosition().y - objectsVector[i]->getExtents().y, objectsVector[i]);
+            sort(temporaryObjectsVector.begin(), temporaryObjectsVector.end(), [](pair<float, shared_ptr<PhysicsObject>> a, pair<float, shared_ptr<PhysicsObject>> b)
             {
-                return a->getPosition().y - a->getExtents().y < b->getPosition().y - b->getExtents().y;
+                return get<0>(a) < get<0>(b);
             });
+            for(size_t i = 0; i < temporaryObjectsVector.size(); i++)
+                objectsVector[i] = get<1>(temporaryObjectsVector[i]);
             for(auto i = objectsVector.begin(); i != objectsVector.end(); i++)
             {
                 shared_ptr<PhysicsObject> objectA = *i;
@@ -352,7 +371,6 @@ inline void PhysicsWorld::runToTime(double stopTime)
                     }
                 }
             }
-            unordered_map<int, unordered_multimap<int, shared_ptr<PhysicsObject>>> objectBins;
             constexpr size_t xScaleFactor = 5, zScaleFactor = 5;
             constexpr size_t bigHashPrime = 14713, smallHashPrime = 91;
             struct HashNode final
@@ -361,7 +379,8 @@ inline void PhysicsWorld::runToTime(double stopTime)
                 int x, z;
                 shared_ptr<PhysicsObject> object;
             };
-            HashNode * overallHashTable[bigHashPrime] = {nullptr};
+            array<HashNode *, bigHashPrime> overallHashTable;
+            overallHashTable.fill(nullptr);
             static thread_local HashNode * freeListHead = nullptr;
             vector<shared_ptr<PhysicsObject>> collideObjectsList;
             collideObjectsList.reserve(objects.size());
@@ -400,11 +419,11 @@ inline void PhysicsWorld::runToTime(double stopTime)
                             else
                                 node = new HashNode;
                             size_t hash = (size_t)(xPosition * 8191 + zPosition) % bigHashPrime;
-                            node->hashNext = overallHashTable[hash];
+                            node->hashNext = overallHashTable.at(hash);
                             node->x = xPosition;
                             node->z = zPosition;
                             node->object = o;
-                            overallHashTable[hash] = node;
+                            overallHashTable.at(hash) = node;
                         }
                     }
                 }
@@ -426,20 +445,21 @@ inline void PhysicsWorld::runToTime(double stopTime)
                 float fMaxZ = position.z + extents.z;
                 int minZ = ifloor(fMinZ * zScaleFactor);
                 int maxZ = iceil(fMaxZ * zScaleFactor);
-                HashNode * perObjectHashTable[smallHashPrime] = {nullptr};
+                array<HashNode *, smallHashPrime> perObjectHashTable;
+                perObjectHashTable.fill(nullptr);
                 for(int xPosition = minX; xPosition <= maxX; xPosition++)
                 {
                     for(int zPosition = minZ; zPosition <= maxZ; zPosition++)
                     {
                         size_t hash = (size_t)(xPosition * 8191 + zPosition);
                         hash %= bigHashPrime;
-                        HashNode * node = overallHashTable[hash];
+                        HashNode * node = overallHashTable.at(hash);
                         while(node != nullptr)
                         {
                             if(node->x == xPosition && node->z == zPosition) // found one
                             {
                                 size_t perObjectHash = std::hash<shared_ptr<PhysicsObject>>()(node->object) % smallHashPrime;
-                                HashNode ** pnode = &perObjectHashTable[perObjectHash];
+                                HashNode ** pnode = &perObjectHashTable.at(perObjectHash);
                                 HashNode * node2 = *pnode;
                                 bool found = false;
                                 while(node2 != nullptr)
@@ -459,10 +479,10 @@ inline void PhysicsWorld::runToTime(double stopTime)
                                         node2 = new HashNode;
                                     else
                                         freeListHead = node2->hashNext;
-                                    node2->hashNext = perObjectHashTable[perObjectHash];
+                                    node2->hashNext = perObjectHashTable.at(perObjectHash);
                                     node2->object = node->object;
                                     node2->x = node2->z = 0;
-                                    perObjectHashTable[perObjectHash] = node2;
+                                    perObjectHashTable.at(perObjectHash) = node2;
                                     collideObjectsList.push_back(node->object);
                                 }
                             }
@@ -487,6 +507,14 @@ inline void PhysicsWorld::runToTime(double stopTime)
                         anyCollisions = true;
                         objectA->adjustPosition(*objectB);
                         //cout << "collision" << endl;
+                    }
+                }
+                if(objectA->constraints)
+                {
+                    for(PhysicsConstraint constraint : *objectA->constraints)
+                    {
+                        if(constraint)
+                            constraint(objectA->position[getNewVariableSetIndex()], objectA->velocity[getNewVariableSetIndex()]);
                     }
                 }
             }
