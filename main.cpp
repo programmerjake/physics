@@ -44,26 +44,39 @@ struct MyObject
     }
 };
 
+float frand(float min, float max)
+{
+    return interpolate((float)rand() / RAND_MAX, min, max);
+}
+
+float frand(float max = 1)
+{
+    return frand(0, max);
+}
+
 int myMain(vector<wstring> args)
 {
     shared_ptr<PhysicsWorld> physicsWorld = make_shared<PhysicsWorld>();
-    vector<MyObject> objects =
+    vector<MyObject> objects;
+    for(size_t i = 0; i < 20; i++)
     {
-        MyObject(PhysicsObject::make(PositionF(0.5f, 1.5, 0, Dimension::Overworld), VectorF(0), true, false, VectorF(0.5f), physicsWorld)),
-        MyObject(PhysicsObject::make(PositionF(1.1f, 2.5, 0, Dimension::Overworld), VectorF(-0.5f, 0, 0), true, false, VectorF(0.5f), physicsWorld)),
-        MyObject(PhysicsObject::make(PositionF(0, -3, 0, Dimension::Overworld), VectorF(0), true, false, VectorF(0.5f), physicsWorld)),
-        MyObject(PhysicsObject::make(PositionF(0, -5, 0, Dimension::Overworld), VectorF(0), false, true, VectorF(2, 0.5f, 2), physicsWorld)),
-        MyObject(PhysicsObject::make(PositionF(-3, -5, 0, Dimension::Overworld), VectorF(0), false, true, VectorF(0.5f, 2, 2), physicsWorld)),
-        MyObject(PhysicsObject::make(PositionF(3, -5, 0, Dimension::Overworld), VectorF(0), false, true, VectorF(0.5f, 2, 2), physicsWorld)),
-        MyObject(PhysicsObject::make(PositionF(0, -5, -3, Dimension::Overworld), VectorF(0), false, true, VectorF(2, 2, 0.5f), physicsWorld)),
-        //MyObject(PhysicsObject::make(PositionF(0, -5, 3, Dimension::Overworld), VectorF(0), false, true, VectorF(2, 2, 0.5f), physicsWorld)),
-    };
+        PositionF position;
+        position.x = 0;
+        position.y = (float)i / 3 - 1;
+        position.z = (float)i / 10 + i / 10;
+        VectorF velocity(frand(-0.1, 0.1), frand(-0.1, 0.1), frand(-0.1, 0.1));
+        //velocity = VectorF(0);
+        objects.push_back(MyObject(PhysicsObject::make(position, velocity, true, false, VectorF(0.1f), PhysicsProperties(0.9f), physicsWorld)));
+    }
+    MyObject floorObject(PhysicsObject::make(PositionF(0, -5, 0, Dimension::Overworld), VectorF(0, 0, 0), false, true, VectorF(5, 0.5f, 5), PhysicsProperties(), physicsWorld));
 #if 0
-    physicsWorld->stepTime(0.4517);
-    physicsWorld->stepTime(100);
-    for(MyObject o : objects)
+    for(size_t i = 0; i < 100; i++)
     {
-        cout << o.physicsObject->isStatic() << " " << o.physicsObject->isSupported() << " " << (VectorF)o.physicsObject->getPosition() << " " << o.physicsObject->getVelocity() << endl;
+        physicsWorld->stepTime(1);
+        for(MyObject o : objects)
+        {
+            cout << o.physicsObject->isStatic() << " " << o.physicsObject->isSupported() << " " << (VectorF)o.physicsObject->getPosition() << " " << o.physicsObject->getVelocity() << endl;
+        }
     }
     return 0;
 #else
@@ -80,7 +93,8 @@ int myMain(vector<wstring> args)
         {
             theMesh->add(obj.getMesh());
         }
-        renderer << transform(Matrix::rotateY(Display::timer() * 0).concat(Matrix::translate(0, 0, -10)), theMesh);
+        theMesh->add(floorObject.getMesh());
+        renderer << transform(Matrix::rotateY(Display::timer() * M_PI / 5).concat(Matrix::translate(0, 0, -10)), theMesh);
         Display::flip(60);
         physicsWorld->stepTime(Display::frameDeltaTime());
     }

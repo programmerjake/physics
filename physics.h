@@ -10,10 +10,20 @@
 #include <queue>
 #include <functional>
 #include <iostream>
+#include <cmath>
 
 using namespace std;
 
 class PhysicsWorld;
+
+struct PhysicsProperties final
+{
+    float bounceFactor, slideFactor;
+    PhysicsProperties(float bounceFactor = sqrt(0.5f), float slideFactor = 1 - sqrt(0.5f))
+        : bounceFactor(limit(bounceFactor, 0.0f, 1.0f)), slideFactor(limit(slideFactor, 0.0f, 1.0f))
+    {
+    }
+};
 
 class PhysicsObject final : public enable_shared_from_this<PhysicsObject>
 {
@@ -30,11 +40,12 @@ private:
     weak_ptr<PhysicsWorld> world;
     uint64_t latestUpdateTag = 0;
     size_t newStateCount = 0;
+    PhysicsProperties properties;
     PhysicsObject(const PhysicsObject &) = delete;
     const PhysicsObject & operator =(const PhysicsObject &) = delete;
-    PhysicsObject(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world);
+    PhysicsObject(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world, PhysicsProperties properties);
 public:
-    static shared_ptr<PhysicsObject> make(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world);
+    static shared_ptr<PhysicsObject> make(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, PhysicsProperties properties, shared_ptr<PhysicsWorld> world);
     ~PhysicsObject();
     PositionF getPosition() const;
     VectorF getVelocity() const;
@@ -66,6 +77,10 @@ public:
     {
         return world.lock();
     }
+    const PhysicsProperties & getProperties() const
+    {
+        return properties;
+    }
     void setNewState(PositionF newPosition, VectorF newVelocity);
     void setupNewState();
     bool collides(const PhysicsObject & rt) const;
@@ -81,7 +96,7 @@ private:
     double currentTime = 0;
     int variableSetIndex = 0;
 public:
-    static constexpr float distanceEPS = 10 * eps;
+    static constexpr float distanceEPS = 20 * eps;
     static constexpr float timeEPS = eps;
     inline double getCurrentTime() const
     {
@@ -158,14 +173,14 @@ public:
     }
 };
 
-inline PhysicsObject::PhysicsObject(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world)
+inline PhysicsObject::PhysicsObject(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world, PhysicsProperties properties)
     : position{position, position}, velocity{velocity, velocity}, objectTime{world->getCurrentTime(), world->getCurrentTime()}, affectedByGravity(affectedByGravity), isStatic_(isStatic), extents(extents), world(world)
 {
 }
 
-inline shared_ptr<PhysicsObject> PhysicsObject::make(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world)
+inline shared_ptr<PhysicsObject> PhysicsObject::make(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, PhysicsProperties properties, shared_ptr<PhysicsWorld> world)
 {
-    shared_ptr<PhysicsObject> retval = shared_ptr<PhysicsObject>(new PhysicsObject(position, velocity, affectedByGravity, isStatic, extents, world));
+    shared_ptr<PhysicsObject> retval = shared_ptr<PhysicsObject>(new PhysicsObject(position, velocity, affectedByGravity, isStatic, extents, world, properties));
     world->objects.insert(retval);
     world->changedObjects[(intptr_t)retval.get()] = retval;
     return retval;
@@ -205,7 +220,7 @@ inline void PhysicsObject::setNewState(PositionF newPosition, VectorF newVelocit
     newStateCount++;
     newPosition /= newStateCount;
     newVelocity /= newStateCount;
-    cout << "new position : " << (VectorF)newPosition << " : new velocity : " << newVelocity << endl;
+    //cout << "new position : " << (VectorF)newPosition << " : new velocity : " << newVelocity << endl;
     position[variableSetIndex] = newPosition;
     velocity[variableSetIndex] = newVelocity;
     world->changedObjects[(intptr_t)this] = shared_from_this();
@@ -294,115 +309,200 @@ inline double PhysicsObject::getNextCollisionTime(const PhysicsObject & rt) cons
 
 inline void PhysicsWorld::runToTime(double stopTime)
 {
-    vector<CollisionEvent> deletedEvents;
-    for(;;)
+    float stepDuration = 1 / 60.0f;
+    size_t stepCount = (size_t)ceil((stopTime - currentTime) / stepDuration - timeEPS);
+    for(size_t i = 1; i <= stepCount; i++)
     {
-        vector<shared_ptr<PhysicsObject>> objectsVector(objects.begin(), objects.end());
-        sort(objectsVector.begin(), objectsVector.end(), [](shared_ptr<PhysicsObject> a, shared_ptr<PhysicsObject> b)
+        if(i >= stepCount)
+            currentTime = stopTime;
+        else
+            currentTime += stepDuration;
+        bool anyCollisions = true;
+        for(size_t i = 0; i < 5 && anyCollisions; i++)
         {
-            return a->getPosition().y - a->getExtents().y < b->getPosition().y - b->getExtents().y;
-        });
-        for(auto i = objectsVector.begin(); i != objectsVector.end(); i++)
-        {
-            shared_ptr<PhysicsObject> objectA = *i;
-            if(!objectA || objectA->isDestroyed())
-                continue;
-            objectA->position[getOldVariableSetIndex()] = objectA->getPosition();
-            objectA->velocity[getOldVariableSetIndex()] = objectA->getVelocity();
-            objectA->objectTime[getOldVariableSetIndex()] = currentTime;
-            objectA->supported = false;
-            if(objectA->isStatic())
+            anyCollisions = false;
+            vector<shared_ptr<PhysicsObject>> objectsVector(objects.begin(), objects.end());
+            sort(objectsVector.begin(), objectsVector.end(), [](shared_ptr<PhysicsObject> a, shared_ptr<PhysicsObject> b)
             {
-                objectA->supported = true;
-                continue;
-            }
-            VectorF & velocity = objectA->velocity[getOldVariableSetIndex()];
-            for(auto j = objectsVector.begin(); j != i; j++)
+                return a->getPosition().y - a->getExtents().y < b->getPosition().y - b->getExtents().y;
+            });
+            for(auto i = objectsVector.begin(); i != objectsVector.end(); i++)
             {
-                shared_ptr<PhysicsObject> objectB = *j;
-                if(!objectB || objectB->isDestroyed())
+                shared_ptr<PhysicsObject> objectA = *i;
+                if(!objectA || objectA->isDestroyed())
                     continue;
-                bool supported = objectA->isSupportedBy(*objectB);
-                if(supported)
+                objectA->position[getOldVariableSetIndex()] = objectA->getPosition();
+                objectA->velocity[getOldVariableSetIndex()] = objectA->getVelocity();
+                objectA->objectTime[getOldVariableSetIndex()] = currentTime;
+                objectA->supported = false;
+                if(objectA->isStatic())
                 {
                     objectA->supported = true;
-                    //velocity.y = max(velocity.y, objectB->getVelocity().y);
-                }
-            }
-            cout << (objectA->supported ? "true " : "false ") << velocity << endl;
-        }
-        while(!changedObjects.empty())
-        {
-            shared_ptr<PhysicsObject> objectA = shared_ptr<PhysicsObject>(get<1>(*changedObjects.begin()));
-            changedObjects.erase(changedObjects.begin());
-            if(!objectA || objectA->isDestroyed())
-                continue;
-            for(auto i = objects.begin(); i != objects.end();)
-            {
-                shared_ptr<PhysicsObject> objectB = *i;
-                if(objectA == objectB)
-                {
-                    i++;
                     continue;
                 }
-                if(!objectB || objectB->isDestroyed())
+                for(auto j = objectsVector.begin(); j != i; j++)
+                {
+                    shared_ptr<PhysicsObject> objectB = *j;
+                    if(!objectB || objectB->isDestroyed())
+                        continue;
+                    bool supported = objectA->isSupportedBy(*objectB);
+                    if(supported)
+                    {
+                        objectA->supported = true;
+                    }
+                }
+            }
+            unordered_map<int, unordered_multimap<int, shared_ptr<PhysicsObject>>> objectBins;
+            constexpr size_t xScaleFactor = 5, zScaleFactor = 5;
+            constexpr size_t bigHashPrime = 14713, smallHashPrime = 91;
+            struct HashNode final
+            {
+                HashNode * hashNext;
+                int x, z;
+                shared_ptr<PhysicsObject> object;
+            };
+            HashNode * overallHashTable[bigHashPrime] = {nullptr};
+            static thread_local HashNode * freeListHead = nullptr;
+            vector<shared_ptr<PhysicsObject>> collideObjectsList;
+            collideObjectsList.reserve(objects.size());
+            for(auto i = objects.begin(); i != objects.end();)
+            {
+                shared_ptr<PhysicsObject> o = *i;
+                if(!o || o->isDestroyed())
                 {
                     i = objects.erase(i);
                     continue;
                 }
-                if(changedObjects.find((intptr_t)objectB.get()) != changedObjects.end())
+                o->setupNewState();
+                PositionF position = o->getPosition();
+                VectorF extents = o->getExtents();
+                float fMinX = position.x - extents.x;
+                float fMaxX = position.x + extents.x;
+                int minX = ifloor(fMinX * xScaleFactor);
+                int maxX = iceil(fMaxX * xScaleFactor);
+                float fMinZ = position.z - extents.z;
+                float fMaxZ = position.z + extents.z;
+                int minZ = ifloor(fMinZ * zScaleFactor);
+                int maxZ = iceil(fMaxZ * zScaleFactor);
+                if((size_t)(maxZ - minZ) * (size_t)(maxX * minX) > (size_t)(xScaleFactor + 1) * (size_t)(zScaleFactor + 1))
                 {
-                    i++;
-                    continue;
+                    collideObjectsList.push_back(o);
                 }
-                double t = objectA->getNextCollisionTime(*objectB);
-                if(t > 0)
+                else
                 {
-                    //cout << "New Collision Event : " << t << endl;
-                    CollisionEvent event(t, objectA, objectB);
-                    if(get<1>(eventsSet.insert(event)))
-                        eventsQueue.push(event);
+                    for(int xPosition = minX; xPosition <= maxX; xPosition++)
+                    {
+                        for(int zPosition = minZ; zPosition <= maxZ; zPosition++)
+                        {
+                            HashNode * node = freeListHead;
+                            if(node != nullptr)
+                                freeListHead = freeListHead->hashNext;
+                            else
+                                node = new HashNode;
+                            size_t hash = (size_t)(xPosition * 8191 + zPosition) % bigHashPrime;
+                            node->hashNext = overallHashTable[hash];
+                            node->x = xPosition;
+                            node->z = zPosition;
+                            node->object = o;
+                            overallHashTable[hash] = node;
+                        }
+                    }
                 }
                 i++;
             }
-        }
-        for(auto i = objects.begin(); i != objects.end(); i++)
-        {
-            shared_ptr<PhysicsObject> o = *i;
-            o->setupNewState();
-        }
-
-        if(eventsQueue.empty())
-            break;
-        CollisionEvent event = eventsQueue.top();
-        if(event.collisionTime > stopTime)
-            break;
-        do
-        {
-            event = eventsQueue.top();
-            eventsQueue.pop();
-            deletedEvents.push_back(event);
-            shared_ptr<PhysicsObject> objectA(event.a), objectB(event.b);
-            if(objectA && objectB && !objectA->isDestroyed() && !objectB->isDestroyed())
+            size_t startCollideObjectsListSize = collideObjectsList.size();
+            for(shared_ptr<PhysicsObject> objectA : objects)
             {
-                if(event.aTag == objectA->latestUpdateTag && event.bTag == objectB->latestUpdateTag)
+                if(objectA->isStatic())
+                    continue;
+                collideObjectsList.resize(startCollideObjectsListSize);
+                PositionF position = objectA->getPosition();
+                VectorF extents = objectA->getExtents();
+                float fMinX = position.x - extents.x;
+                float fMaxX = position.x + extents.x;
+                int minX = ifloor(fMinX * xScaleFactor);
+                int maxX = iceil(fMaxX * xScaleFactor);
+                float fMinZ = position.z - extents.z;
+                float fMaxZ = position.z + extents.z;
+                int minZ = ifloor(fMinZ * zScaleFactor);
+                int maxZ = iceil(fMaxZ * zScaleFactor);
+                HashNode * perObjectHashTable[smallHashPrime] = {nullptr};
+                for(int xPosition = minX; xPosition <= maxX; xPosition++)
                 {
-                    currentTime = event.collisionTime;
-                    cout << currentTime << endl;
-                    objectA->adjustPosition(*objectB);
-                    objectB->adjustPosition(*objectA);
+                    for(int zPosition = minZ; zPosition <= maxZ; zPosition++)
+                    {
+                        size_t hash = (size_t)(xPosition * 8191 + zPosition);
+                        hash %= bigHashPrime;
+                        HashNode * node = overallHashTable[hash];
+                        while(node != nullptr)
+                        {
+                            if(node->x == xPosition && node->z == zPosition) // found one
+                            {
+                                size_t perObjectHash = std::hash<shared_ptr<PhysicsObject>>()(node->object) % smallHashPrime;
+                                HashNode ** pnode = &perObjectHashTable[perObjectHash];
+                                HashNode * node2 = *pnode;
+                                bool found = false;
+                                while(node2 != nullptr)
+                                {
+                                    if(node2->object == node->object)
+                                    {
+                                        found = true;
+                                        break;
+                                    }
+                                    pnode = &node2->hashNext;
+                                    node2 = *pnode;
+                                }
+                                if(!found)
+                                {
+                                    node2 = freeListHead;
+                                    if(node2 == nullptr)
+                                        node2 = new HashNode;
+                                    else
+                                        freeListHead = node2->hashNext;
+                                    node2->hashNext = perObjectHashTable[perObjectHash];
+                                    node2->object = node->object;
+                                    node2->x = node2->z = 0;
+                                    perObjectHashTable[perObjectHash] = node2;
+                                    collideObjectsList.push_back(node->object);
+                                }
+                            }
+                            node = node->hashNext;
+                        }
+                    }
+                }
+                for(HashNode * node : perObjectHashTable)
+                {
+                    while(node != nullptr)
+                    {
+                        HashNode * nextNode = node->hashNext;
+                        node->hashNext = freeListHead;
+                        freeListHead = node;
+                        node = nextNode;
+                    }
+                }
+                for(auto objectB : collideObjectsList)
+                {
+                    if(objectA != objectB && objectA->collides(*objectB))
+                    {
+                        anyCollisions = true;
+                        objectA->adjustPosition(*objectB);
+                        //cout << "collision" << endl;
+                    }
                 }
             }
+            for(HashNode * node : overallHashTable)
+            {
+                while(node != nullptr)
+                {
+                    HashNode * nextNode = node->hashNext;
+                    node->hashNext = freeListHead;
+                    freeListHead = node;
+                    node = nextNode;
+                }
+            }
+            swapVariableSetIndex();
         }
-        while(!eventsQueue.empty() && eventsQueue.top().collisionTime < event.collisionTime + timeEPS);
-        swapVariableSetIndex();
     }
-    currentTime = stopTime;
-    for(auto e : deletedEvents)
-    {
-        eventsSet.erase(e);
-    }
-    cout << currentTime << endl;
 }
 
 inline void PhysicsObject::adjustPosition(const PhysicsObject & rt)
@@ -447,7 +547,9 @@ inline void PhysicsObject::adjustPosition(const PhysicsObject & rt)
         aPosition.z += interpolationT * normal.z * surfaceOffset.z;
     }
     if(dot(deltaVelocity, normal) < 0)
-        aVelocity -= 1.5f * dot(deltaVelocity, normal) * normal * interpolationT;
+        aVelocity -= ((1 + properties.bounceFactor * rt.properties.bounceFactor) * dot(deltaVelocity, normal) * normal + (1 - properties.slideFactor) * (1 - rt.properties.slideFactor) * (deltaVelocity - normal * dot(deltaVelocity, normal))) * interpolationT;
+    else
+        aVelocity = interpolate(0.5f, aVelocity, bVelocity);
     setNewState(aPosition, aVelocity);
 }
 
@@ -461,8 +563,6 @@ bool PhysicsObject::isSupportedBy(const PhysicsObject & rt) const
     PositionF bPosition = rt.getPosition();
     if(aPosition.d != bPosition.d)
         return false;
-    VectorF aVelocity = getVelocity();
-    VectorF bVelocity = rt.getVelocity();
     VectorF extentsSum = extents + rt.extents;
     VectorF deltaPosition = aPosition - bPosition;
     if(deltaPosition.x + PhysicsWorld::distanceEPS > -extentsSum.x && deltaPosition.x - PhysicsWorld::distanceEPS < extentsSum.x &&
@@ -472,8 +572,7 @@ bool PhysicsObject::isSupportedBy(const PhysicsObject & rt) const
         {
             if(deltaPosition.y < PhysicsWorld::distanceEPS * 4 + extentsSum.y)
             {
-                if(aVelocity.y - PhysicsWorld::distanceEPS < bVelocity.y)
-                    return true;
+                return true;
             }
         }
     }
