@@ -36,8 +36,9 @@ private:
     double objectTime[2];
     bool affectedByGravity;
     bool isStatic_;
-    bool supported;
+    bool supported = false;
     bool destroyed = false;
+    bool isCylinder_;
     VectorF extents;
     weak_ptr<PhysicsWorld> world;
     uint64_t latestUpdateTag = 0;
@@ -46,9 +47,10 @@ private:
     shared_ptr<const vector<PhysicsConstraint>> constraints;
     PhysicsObject(const PhysicsObject &) = delete;
     const PhysicsObject & operator =(const PhysicsObject &) = delete;
-    PhysicsObject(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world, PhysicsProperties properties);
+    PhysicsObject(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world, PhysicsProperties properties, bool isCylinder);
 public:
-    static shared_ptr<PhysicsObject> make(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, PhysicsProperties properties, shared_ptr<PhysicsWorld> world);
+    static shared_ptr<PhysicsObject> makeBox(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, PhysicsProperties properties, shared_ptr<PhysicsWorld> world);
+    static shared_ptr<PhysicsObject> makeCylinder(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, float radius, float yExtents, PhysicsProperties properties, shared_ptr<PhysicsWorld> world);
     ~PhysicsObject();
     PositionF getPosition() const;
     VectorF getVelocity() const;
@@ -86,6 +88,14 @@ public:
     {
         return extents;
     }
+    bool isCylinder() const
+    {
+        return isCylinder_;
+    }
+    bool isBox() const
+    {
+        return !isCylinder_;
+    }
     shared_ptr<PhysicsWorld> getWorld() const
     {
         return world.lock();
@@ -97,7 +107,6 @@ public:
     void setNewState(PositionF newPosition, VectorF newVelocity);
     void setupNewState();
     bool collides(const PhysicsObject & rt) const;
-    double getNextCollisionTime(const PhysicsObject & rt) const;
     void adjustPosition(const PhysicsObject & rt);
     bool isSupportedBy(const PhysicsObject & rt) const;
 };
@@ -186,14 +195,29 @@ public:
     }
 };
 
-inline PhysicsObject::PhysicsObject(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world, PhysicsProperties properties)
-    : position{position, position}, velocity{velocity, velocity}, objectTime{world->getCurrentTime(), world->getCurrentTime()}, affectedByGravity(affectedByGravity), isStatic_(isStatic), extents(extents), world(world)
+inline PhysicsObject::PhysicsObject(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, shared_ptr<PhysicsWorld> world, PhysicsProperties properties, bool isCylinder)
+    : position{position, position},
+    velocity{velocity, velocity},
+    objectTime{world->getCurrentTime(), world->getCurrentTime()},
+    affectedByGravity(affectedByGravity),
+    isStatic_(isStatic),
+    isCylinder_(isCylinder),
+    extents(extents),
+    world(world)
 {
 }
 
-inline shared_ptr<PhysicsObject> PhysicsObject::make(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, PhysicsProperties properties, shared_ptr<PhysicsWorld> world)
+inline shared_ptr<PhysicsObject> PhysicsObject::makeBox(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, VectorF extents, PhysicsProperties properties, shared_ptr<PhysicsWorld> world)
 {
-    shared_ptr<PhysicsObject> retval = shared_ptr<PhysicsObject>(new PhysicsObject(position, velocity, affectedByGravity, isStatic, extents, world, properties));
+    shared_ptr<PhysicsObject> retval = shared_ptr<PhysicsObject>(new PhysicsObject(position, velocity, affectedByGravity, isStatic, extents, world, properties, false));
+    world->objects.insert(retval);
+    world->changedObjects[(intptr_t)retval.get()] = retval;
+    return retval;
+}
+
+inline shared_ptr<PhysicsObject> PhysicsObject::makeCylinder(PositionF position, VectorF velocity, bool affectedByGravity, bool isStatic, float radius, float yExtents, PhysicsProperties properties, shared_ptr<PhysicsWorld> world)
+{
+    shared_ptr<PhysicsObject> retval = shared_ptr<PhysicsObject>(new PhysicsObject(position, velocity, affectedByGravity, isStatic, VectorF(radius, yExtents, radius), world, properties, true));
     world->objects.insert(retval);
     world->changedObjects[(intptr_t)retval.get()] = retval;
     return retval;
@@ -261,68 +285,59 @@ inline bool PhysicsObject::collides(const PhysicsObject & rt) const
         return false;
     VectorF lExtents = extents;
     VectorF rExtents = rt.extents;
-    if(lPosition.x - lExtents.x - PhysicsWorld::distanceEPS > rPosition.x + rExtents.x)
+    VectorF extentsSum = lExtents + rExtents;
+    VectorF deltaPosition = (VectorF)lPosition - (VectorF)rPosition;
+    if(abs(deltaPosition.x) > PhysicsWorld::distanceEPS + extentsSum.x)
         return false;
-    if(rPosition.x - rExtents.x - PhysicsWorld::distanceEPS > lPosition.x + lExtents.x)
+    if(abs(deltaPosition.y) > PhysicsWorld::distanceEPS + extentsSum.y)
         return false;
-    if(lPosition.y - lExtents.y - PhysicsWorld::distanceEPS > rPosition.y + rExtents.y)
+    if(abs(deltaPosition.z) > PhysicsWorld::distanceEPS + extentsSum.z)
         return false;
-    if(rPosition.y - rExtents.y - PhysicsWorld::distanceEPS > lPosition.y + lExtents.y)
-        return false;
-    if(lPosition.z - lExtents.z - PhysicsWorld::distanceEPS > rPosition.z + rExtents.z)
-        return false;
-    if(rPosition.z - rExtents.z - PhysicsWorld::distanceEPS > lPosition.z + lExtents.z)
-        return false;
-    return true;
-}
-
-inline double PhysicsObject::getNextCollisionTime(const PhysicsObject & rt) const
-{
-    auto world = getWorld();
-    assert(world == rt.getWorld());
-    PositionF lPosition = getPosition();
-    PositionF rPosition = rt.getPosition();
-    if(lPosition.d != rPosition.d)
-        return -1;
-    VectorF lExtents = extents;
-    VectorF rExtents = rt.extents;
-    if(collides(rt))
-        return world->getCurrentTime();
-    VectorF lVelocity = getVelocity();
-    VectorF rVelocity = rt.getVelocity();
-    VectorF relativeAcceleration = VectorF(0);
-    if(isAffectedByGravity() && !isSupported())
-        relativeAcceleration += gravityVector;
-    if(rt.isAffectedByGravity() && !rt.isSupported())
-        relativeAcceleration -= gravityVector;
-    array<float, 12> collisions;
-    size_t usedCount = 0;
-    VectorF quadratic = 0.5f * relativeAcceleration;
-    VectorF linear = lVelocity - rVelocity;
-    VectorF constant1 = lPosition - rPosition - (lExtents + rExtents);
-    VectorF constant2 = lPosition - rPosition + (lExtents + rExtents);
-    usedCount += solveQuadratic(constant1.x, linear.x, quadratic.x, &collisions[usedCount]);
-    usedCount += solveQuadratic(constant1.y, linear.y, quadratic.y, &collisions[usedCount]);
-    usedCount += solveQuadratic(constant1.z, linear.z, quadratic.z, &collisions[usedCount]);
-    usedCount += solveQuadratic(constant2.x, linear.x, quadratic.x, &collisions[usedCount]);
-    usedCount += solveQuadratic(constant2.y, linear.y, quadratic.y, &collisions[usedCount]);
-    usedCount += solveQuadratic(constant2.z, linear.z, quadratic.z, &collisions[usedCount]);
-    sort(collisions.begin(), collisions.begin() + usedCount);
-    for(auto t : collisions)
+    if(isBox() && rt.isBox())
+        return true;
+    if(isCylinder() && rt.isCylinder())
     {
-        if(t < PhysicsWorld::timeEPS)
-            continue;
-        VectorF v1 = linear * t + t * t * quadratic + constant1;
-        VectorF v2 = linear * t + t * t * quadratic + constant2;
-        if(v1.x < PhysicsWorld::distanceEPS && v1.y < PhysicsWorld::distanceEPS && v1.z < PhysicsWorld::distanceEPS && v2.x > -PhysicsWorld::distanceEPS && v2.y > -PhysicsWorld::distanceEPS && v2.z > -PhysicsWorld::distanceEPS)
-            return t + world->getCurrentTime();
+        deltaPosition.y = 0;
+        return abs(deltaPosition) <= extentsSum.x + PhysicsWorld::distanceEPS;
     }
-    return -1;
+    if((isBox() && rt.isCylinder()) || (rt.isBox() && isCylinder()))
+    {
+        VectorF cylinderCenter;
+        float cylinderRadius;
+        VectorF boxCenter;
+        VectorF boxExtents;
+        if(isBox())
+        {
+            cylinderCenter = (VectorF)rPosition;
+            cylinderRadius = rt.extents.x;
+            boxCenter = (VectorF)lPosition;
+            boxExtents = extents;
+        }
+        else
+        {
+            cylinderCenter = (VectorF)lPosition;
+            cylinderRadius = extents.x;
+            boxCenter = (VectorF)rPosition;
+            boxExtents = rt.extents;
+        }
+        cylinderCenter.y = 0;
+        boxCenter.y = 0;
+        VectorF deltaCenter = cylinderCenter - boxCenter;
+        if(abs(deltaCenter.x) < boxExtents.x)
+            return true;
+        if(abs(deltaCenter.z) < boxExtents.z)
+            return true;
+        VectorF v = deltaCenter;
+        v -= boxExtents * VectorF(sgn(deltaCenter.x), 0, sgn(deltaCenter.z));
+        return abs(v) <= cylinderRadius + PhysicsWorld::distanceEPS;
+    }
+    assert(false);
+    return false;
 }
 
 inline void PhysicsWorld::runToTime(double stopTime)
 {
-    float stepDuration = 1 / 30.0f;
+    float stepDuration = 1 / 600.0f;
     size_t stepCount = (size_t)ceil((stopTime - currentTime) / stepDuration - timeEPS);
     for(size_t i = 1; i <= stepCount; i++)
     {
@@ -542,9 +557,7 @@ inline void PhysicsObject::adjustPosition(const PhysicsObject & rt)
     VectorF aVelocity = getVelocity();
     VectorF bVelocity = rt.getVelocity();
     VectorF deltaPosition = aPosition - bPosition;
-    VectorF AbsDeltaPosition = VectorF(abs(deltaPosition.x), abs(deltaPosition.y), abs(deltaPosition.z));
     VectorF extentsSum = getExtents() + rt.getExtents();
-    VectorF surfaceOffset = extentsSum - AbsDeltaPosition + VectorF(PhysicsWorld::distanceEPS * 2);
     VectorF deltaVelocity = aVelocity - bVelocity;
     float interpolationT = 0.5f;
     if(rt.isStatic())
@@ -559,21 +572,151 @@ inline void PhysicsObject::adjustPosition(const PhysicsObject & rt)
         deltaPosition.y = PhysicsWorld::distanceEPS;
     if(deltaPosition.z == 0)
         deltaPosition.z = PhysicsWorld::distanceEPS;
-    if(surfaceOffset.x < surfaceOffset.y && surfaceOffset.x < surfaceOffset.z)
+    if(isBox() && rt.isBox())
     {
-        normal.x = sgn(deltaPosition.x);
-        aPosition.x += interpolationT * normal.x * surfaceOffset.x;
+        VectorF AbsDeltaPosition = VectorF(abs(deltaPosition.x), abs(deltaPosition.y), abs(deltaPosition.z));
+        VectorF surfaceOffset = extentsSum - AbsDeltaPosition + VectorF(PhysicsWorld::distanceEPS * 2);
+        if(surfaceOffset.x < surfaceOffset.y && surfaceOffset.x < surfaceOffset.z)
+        {
+            normal.x = sgn(deltaPosition.x);
+            aPosition.x += interpolationT * normal.x * surfaceOffset.x;
+        }
+        else if(surfaceOffset.y < surfaceOffset.z)
+        {
+            normal.y = sgn(deltaPosition.y);
+            aPosition.y += interpolationTY * normal.y * surfaceOffset.y;
+        }
+        else
+        {
+            normal.z = sgn(deltaPosition.z);
+            aPosition.z += interpolationT * normal.z * surfaceOffset.z;
+        }
     }
-    else if(surfaceOffset.y < surfaceOffset.z)
+    else if(isCylinder() && rt.isCylinder())
     {
-        normal.y = sgn(deltaPosition.y);
-        aPosition.y += interpolationTY * normal.y * surfaceOffset.y;
+        float absDeltaY = abs(deltaPosition.y);
+        VectorF xzDeltaPosition = deltaPosition;
+        xzDeltaPosition.y = 0;
+        float deltaCylindricalR = abs(xzDeltaPosition);
+        float ySurfaceOffset = extentsSum.y - absDeltaY + PhysicsWorld::distanceEPS * 2;
+        float rSurfaceOffset = extentsSum.x - deltaCylindricalR + PhysicsWorld::distanceEPS * 2;
+        if(ySurfaceOffset < rSurfaceOffset)
+        {
+            normal.y = sgn(deltaPosition.y);
+            aPosition.y += interpolationTY * normal.y * ySurfaceOffset;
+        }
+        else
+        {
+            normal = xzDeltaPosition / deltaCylindricalR;
+            aPosition += interpolationT * rSurfaceOffset * normal;
+        }
+    }
+    else if(isCylinder() && rt.isBox())
+    {
+        float absDeltaY = abs(deltaPosition.y);
+        float ySurfaceOffset = extentsSum.y - absDeltaY + PhysicsWorld::distanceEPS * 2;
+        VectorF xzDeltaPosition = deltaPosition;
+        xzDeltaPosition.y = 0;
+        VectorF horizontalNormal;
+        float horizontalSurfaceOffset;
+        VectorF absXZDeltaPosition = VectorF(abs(deltaPosition.x), 0, abs(deltaPosition.z));
+        VectorF xzSurfaceOffset = VectorF(extents.x, 0, extents.x) + rt.extents - absXZDeltaPosition + VectorF(PhysicsWorld::distanceEPS * 2, 0, PhysicsWorld::distanceEPS * 2);
+        if(absXZDeltaPosition.x < rt.extents.x && absXZDeltaPosition.z < rt.extents.z)
+        {
+            if(xzSurfaceOffset.x < xzSurfaceOffset.z)
+            {
+                horizontalNormal = VectorF(sgn(deltaPosition.x), 0, 0);
+                horizontalSurfaceOffset = xzSurfaceOffset.x;
+            }
+            else
+            {
+                horizontalNormal = VectorF(0, 0, sgn(deltaPosition.z));
+                horizontalSurfaceOffset = xzSurfaceOffset.z;
+            }
+        }
+        else if(absXZDeltaPosition.x < rt.extents.x + PhysicsWorld::distanceEPS)
+        {
+            horizontalNormal = VectorF(0, 0, sgn(deltaPosition.z));
+            horizontalSurfaceOffset = xzSurfaceOffset.z;
+        }
+        else if(absXZDeltaPosition.z < rt.extents.z + PhysicsWorld::distanceEPS)
+        {
+            horizontalNormal = VectorF(sgn(deltaPosition.x), 0, 0);
+            horizontalSurfaceOffset = xzSurfaceOffset.x;
+        }
+        else
+        {
+            VectorF closestPoint = VectorF(limit(deltaPosition.x, -rt.extents.x, rt.extents.x), 0, limit(deltaPosition.z, -rt.extents.z, rt.extents.z));
+            VectorF v = xzDeltaPosition - closestPoint;
+            float r = abs(v);
+            horizontalSurfaceOffset = extents.x - r + PhysicsWorld::distanceEPS * 2;
+            horizontalNormal = normalize(v);
+        }
+        if(ySurfaceOffset < horizontalSurfaceOffset)
+        {
+            normal.y = sgn(deltaPosition.y);
+            aPosition.y += interpolationTY * normal.y * ySurfaceOffset;
+        }
+        else
+        {
+            normal = horizontalNormal;
+            aPosition += interpolationT * horizontalSurfaceOffset * normal;
+        }
+    }
+    else if(isBox() && rt.isCylinder())
+    {
+        float absDeltaY = abs(deltaPosition.y);
+        float ySurfaceOffset = extentsSum.y - absDeltaY + PhysicsWorld::distanceEPS * 2;
+        VectorF xzDeltaPosition = deltaPosition;
+        xzDeltaPosition.y = 0;
+        VectorF horizontalNormal;
+        float horizontalSurfaceOffset;
+        VectorF absXZDeltaPosition = VectorF(abs(deltaPosition.x), 0, abs(deltaPosition.z));
+        VectorF xzSurfaceOffset = VectorF(rt.extents.x, 0, rt.extents.x) + extents - absXZDeltaPosition + VectorF(PhysicsWorld::distanceEPS * 2, 0, PhysicsWorld::distanceEPS * 2);
+        if(absXZDeltaPosition.x < extents.x && absXZDeltaPosition.z < extents.z)
+        {
+            if(xzSurfaceOffset.x < xzSurfaceOffset.z)
+            {
+                horizontalNormal = VectorF(sgn(deltaPosition.x), 0, 0);
+                horizontalSurfaceOffset = xzSurfaceOffset.x;
+            }
+            else
+            {
+                horizontalNormal = VectorF(0, 0, sgn(deltaPosition.z));
+                horizontalSurfaceOffset = xzSurfaceOffset.z;
+            }
+        }
+        else if(absXZDeltaPosition.x < extents.x + PhysicsWorld::distanceEPS)
+        {
+            horizontalNormal = VectorF(0, 0, sgn(deltaPosition.z));
+            horizontalSurfaceOffset = xzSurfaceOffset.z;
+        }
+        else if(absXZDeltaPosition.z < extents.z + PhysicsWorld::distanceEPS)
+        {
+            horizontalNormal = VectorF(sgn(deltaPosition.x), 0, 0);
+            horizontalSurfaceOffset = xzSurfaceOffset.x;
+        }
+        else
+        {
+            VectorF closestPoint = VectorF(limit(deltaPosition.x, -extents.x, extents.x), 0, limit(deltaPosition.z, -extents.z, extents.z));
+            VectorF v = xzDeltaPosition - closestPoint;
+            float r = abs(v);
+            horizontalSurfaceOffset = rt.extents.x - r + PhysicsWorld::distanceEPS * 2;
+            horizontalNormal = normalize(v);
+        }
+        if(ySurfaceOffset < horizontalSurfaceOffset)
+        {
+            normal.y = sgn(deltaPosition.y);
+            aPosition.y += interpolationTY * normal.y * ySurfaceOffset;
+        }
+        else
+        {
+            normal = horizontalNormal;
+            aPosition += interpolationT * horizontalSurfaceOffset * normal;
+        }
     }
     else
-    {
-        normal.z = sgn(deltaPosition.z);
-        aPosition.z += interpolationT * normal.z * surfaceOffset.z;
-    }
+        assert(false);
     if(dot(deltaVelocity, normal) < 0)
         aVelocity -= ((1 + properties.bounceFactor * rt.properties.bounceFactor) * dot(deltaVelocity, normal) * normal + (1 - properties.slideFactor) * (1 - rt.properties.slideFactor) * (deltaVelocity - normal * dot(deltaVelocity, normal))) * interpolationT;
     else
@@ -581,10 +724,10 @@ inline void PhysicsObject::adjustPosition(const PhysicsObject & rt)
     setNewState(aPosition, aVelocity);
 }
 
-bool PhysicsObject::isSupportedBy(const PhysicsObject & rt) const
+inline bool PhysicsObject::isSupportedBy(const PhysicsObject & rt) const
 {
     if(isStatic())
-        return true;
+        return false;
     if(!rt.isSupported() && !rt.isStatic())
         return false;
     PositionF aPosition = getPosition();
@@ -600,7 +743,45 @@ bool PhysicsObject::isSupportedBy(const PhysicsObject & rt) const
         {
             if(deltaPosition.y < PhysicsWorld::distanceEPS * 4 + extentsSum.y)
             {
-                return true;
+                if(isBox() && rt.isBox())
+                    return true;
+                if(isCylinder() && rt.isCylinder())
+                {
+                    deltaPosition.y = 0;
+                    return abs(deltaPosition) <= extentsSum.x + PhysicsWorld::distanceEPS;
+                }
+                if((isBox() && rt.isCylinder()) || (rt.isBox() && isCylinder()))
+                {
+                    VectorF cylinderCenter;
+                    float cylinderRadius;
+                    VectorF boxCenter;
+                    VectorF boxExtents;
+                    if(isBox())
+                    {
+                        cylinderCenter = (VectorF)bPosition;
+                        cylinderRadius = rt.extents.x;
+                        boxCenter = (VectorF)aPosition;
+                        boxExtents = extents;
+                    }
+                    else
+                    {
+                        cylinderCenter = (VectorF)aPosition;
+                        cylinderRadius = extents.x;
+                        boxCenter = (VectorF)bPosition;
+                        boxExtents = rt.extents;
+                    }
+                    cylinderCenter.y = 0;
+                    boxCenter.y = 0;
+                    VectorF deltaCenter = cylinderCenter - boxCenter;
+                    if(abs(deltaCenter.x) < boxExtents.x)
+                        return true;
+                    if(abs(deltaCenter.z) < boxExtents.z)
+                        return true;
+                    VectorF v = deltaCenter;
+                    v -= boxExtents * VectorF(sgn(deltaCenter.x), 0, sgn(deltaCenter.z));
+                    return abs(v) <= cylinderRadius + PhysicsWorld::distanceEPS;
+                }
+                assert(false);
             }
         }
     }

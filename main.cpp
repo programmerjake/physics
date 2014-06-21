@@ -58,14 +58,14 @@ int myMain(vector<wstring> args)
 {
     shared_ptr<PhysicsWorld> physicsWorld = make_shared<PhysicsWorld>();
     vector<MyObject> objects;
-    size_t objectCount = 14;
+    size_t objectCount = 25;
 #if 1
-    objects.push_back(MyObject(PhysicsObject::make(PositionF(-1, -4, 0, Dimension::Overworld), VectorF(0, 0, 0), true, false, VectorF(0.5f), PhysicsProperties(), physicsWorld)->setConstraints(vector<PhysicsConstraint>{
+    objects.push_back(MyObject(PhysicsObject::makeCylinder(PositionF(-1, -4, 0, Dimension::Overworld), VectorF(0, 0, 0), true, false, 0.5f, 0.5f, PhysicsProperties(), physicsWorld)->setConstraints(vector<PhysicsConstraint>{
     [physicsWorld](PositionF & position, VectorF & velocity)
     {
         double t = physicsWorld->getCurrentTime() - 10;
         float onSpeed = 10;
-        float stopTime = 0.3;
+        float stopTime = 0.1;
         if(t < 0 || t > stopTime)
         {
             position = PositionF(-1 + (t < 0 ? 0 : onSpeed * stopTime), -4, 0, Dimension::Overworld);
@@ -75,8 +75,8 @@ int myMain(vector<wstring> args)
         position = PositionF(t * onSpeed - 1, -4, 0, Dimension::Overworld);
         velocity = VectorF(onSpeed, 0, 0);
     }})));
-#else
-    objects.push_back(MyObject(PhysicsObject::make(PositionF(-1, 0, 0, Dimension::Overworld), VectorF(0, 0, 0), true, false, VectorF(0.5f), PhysicsProperties(), physicsWorld)->setConstraints(vector<PhysicsConstraint>{
+#elif 0
+    objects.push_back(MyObject(PhysicsObject::makeBox(PositionF(-1, 0, 0, Dimension::Overworld), VectorF(0, 0, 0), true, false, VectorF(0.5f), PhysicsProperties(), physicsWorld)->setConstraints(vector<PhysicsConstraint>{
     [](PositionF & position, VectorF & velocity)
     {
         double t = Display::timer();
@@ -101,18 +101,22 @@ int myMain(vector<wstring> args)
         velocity += VectorF(origin.z, 0, -origin.x) * speed;
     }})));
 #endif
-    objects.push_back(MyObject(PhysicsObject::make(PositionF(5, 0, 0, Dimension::Overworld), VectorF(0, 0, 0), false, true, VectorF(0.5f, 5, 0.5f), PhysicsProperties(), physicsWorld)));
+    objects.push_back(MyObject(PhysicsObject::makeBox(PositionF(5, 0, 0, Dimension::Overworld), VectorF(0, 0, 0), false, true, VectorF(0.5f, 5, 1.5f), PhysicsProperties(), physicsWorld)));
     for(size_t i = 0; i < objectCount; i++)
     {
         PositionF position;
-        position.x = 0;
-        position.y = (float)i / 4;
-        position.z = 0;
-        VectorF velocity(frand(-0.1, 0.1), frand(-0.1, 0.1), frand(-0.1, 0.1));
+        VectorF velocity(frand(-0.9, 0.9) + 3, frand(-0.1, 0.1), frand(-0.5, 0.5));
         velocity = VectorF(0);
-        objects.push_back(MyObject(PhysicsObject::make(position, velocity, true, false, VectorF(0.1f), PhysicsProperties(0.9f), physicsWorld)));
+        position.x = 0;
+        position.y = (float)i / 2;
+        position.z = (float)(i - (float)objectCount / 2) / 10;
+#if 1
+        objects.push_back(MyObject(PhysicsObject::makeCylinder(position, velocity, true, false, 0.025f, 0.4f, PhysicsProperties(0.9f), physicsWorld)));
+#else
+        objects.push_back(MyObject(PhysicsObject::makeBox(position, velocity, true, false, VectorF(0.025f, 0.4f, 0.025f), PhysicsProperties(0.9f), physicsWorld)));
+#endif // 1
     }
-    MyObject floorObject(PhysicsObject::make(PositionF(0, -5.5, 0, Dimension::Overworld), VectorF(0, 0, 0), false, true, VectorF(5, 0.5f, 5), PhysicsProperties(), physicsWorld));
+    MyObject floorObject(PhysicsObject::makeBox(PositionF(0, -5.5, 0, Dimension::Overworld), VectorF(0, 0, 0), false, true, VectorF(5, 0.5f, 5), PhysicsProperties(), physicsWorld));
     float idealHeight = -5 + (2 * objectCount - 1) * 0.1f;
 #if 0
     for(size_t i = 0; i < 100; i++)
